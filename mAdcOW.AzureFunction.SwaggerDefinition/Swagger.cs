@@ -19,7 +19,7 @@ namespace mAdcOW.AzureFunction.SwaggerDefinition
 {
     public static class Swagger
     {
-        const string SwaggerFunctionName = "Swagger";
+        private const string SwaggerFunctionName = "Swagger";
 
         [FunctionName(SwaggerFunctionName)]
         [ResponseType(typeof(void))]
@@ -46,7 +46,6 @@ namespace mAdcOW.AzureFunction.SwaggerDefinition
             return await Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new ObjectContent<object>(doc, new JsonMediaTypeFormatter()),
-
             });
         }
 
@@ -122,6 +121,17 @@ namespace mAdcOW.AzureFunction.SwaggerDefinition
                     keyQuery.apikeyQuery = new string[0];
                     operation.security = new ExpandoObject[] { keyQuery };
 
+                    foreach (Attribute attribute in methodInfo.GetCustomAttributes())
+                    {
+                        if (!(attribute is VisibilityAttribute visibility)) continue;
+
+                        IDictionary<string, object> expandoDictionary = operation;
+                        expandoDictionary["x-ms-visibility"] = visibility.Visibility.GetType()
+                            .GetMember(visibility.Visibility.ToString())
+                            .First()
+                            .GetCustomAttribute<DisplayAttribute>()
+                            .GetName();
+                    }
                     // Microsoft Flow import doesn't like two apiKey options, so we leave one out.
                     //dynamic apikeyHeader = new ExpandoObject();
                     //apikeyHeader.apikeyHeader = new string[0];
@@ -181,14 +191,9 @@ namespace mAdcOW.AzureFunction.SwaggerDefinition
             {
                 var responseTypeAttr = (ResponseTypeAttribute)methodInfo
                     .GetCustomAttributes(typeof(ResponseTypeAttribute), false).FirstOrDefault();
-                if (responseTypeAttr != null)
-                {
-                    returnType = responseTypeAttr.ResponseType;
-                }
-                else
-                {
-                    returnType = typeof(void);
-                }
+                returnType = responseTypeAttr != null
+                    ? responseTypeAttr.ResponseType
+                    : typeof(void);
             }
             if (returnType != typeof(void))
             {
@@ -239,7 +244,6 @@ namespace mAdcOW.AzureFunction.SwaggerDefinition
                 if (parameter.ParameterType == typeof(Microsoft.Extensions.Logging.ILogger)) continue;
 
                 bool hasUriAttribute = parameter.GetCustomAttributes().Any(attr => attr is FromUriAttribute);
-
 
                 if (route.Contains('{' + parameter.Name))
                 {
@@ -301,12 +305,37 @@ namespace mAdcOW.AzureFunction.SwaggerDefinition
                 else
                 {
                     dynamic opParam = new ExpandoObject();
-
                     opParam.name = parentName + property.Name;
                     opParam.@in = "query";
                     opParam.required = property.GetCustomAttributes().Any(attr => attr is RequiredAttribute);
                     opParam.description = GetPropertyDescription(property);
                     SetParameterType(property.PropertyType, opParam, doc.definitions);
+
+                    // x-ms-summary is title
+                    if (property.GetCustomAttributes().Any(attr => attr is SummaryAttribute))
+                    {
+                        SummaryAttribute summary = (SummaryAttribute)property.GetCustomAttributes().First(attr => attr is SummaryAttribute);
+                        IDictionary<string, object> expandoDictionary = opParam;
+                        expandoDictionary["x-ms-summary"] = summary.Summary;
+                    }
+
+                    if (property.GetCustomAttributes().Any(attr => attr is VisibilityAttribute))
+                    {
+                        VisibilityAttribute visibility = (VisibilityAttribute)property.GetCustomAttributes().First(attr => attr is VisibilityAttribute);
+                        IDictionary<string, object> expandoDictionary = opParam;
+                        expandoDictionary["x-ms-visibility"] = visibility.Visibility.GetType()
+                            .GetMember(visibility.Visibility.ToString())
+                            .First()
+                            .GetCustomAttribute<DisplayAttribute>()
+                            .GetName();
+                    }
+
+                    if (property.GetCustomAttributes().Any(attr => attr is StaticValuesAttribute))
+                    {
+                        StaticValuesAttribute list = (StaticValuesAttribute)property.GetCustomAttributes().First(attr => attr is StaticValuesAttribute);
+                        opParam.@enum = list.StaticValues;
+                    }
+
                     parameterSignatures.Add(opParam);
                 }
             }
@@ -314,12 +343,10 @@ namespace mAdcOW.AzureFunction.SwaggerDefinition
 
         private static void AddParameterDefinition(IDictionary<string, object> definitions, Type parameterType)
         {
-            dynamic objDef;
-            if (!definitions.TryGetValue(parameterType.Name, out objDef))
-            {
-                objDef = GetObjectSchemaDefinition(definitions, parameterType);
-                definitions.Add(parameterType.Name, objDef);
-            }
+            if (definitions.TryGetValue(parameterType.Name, out var objDef)) return;
+
+            objDef = GetObjectSchemaDefinition(definitions, parameterType);
+            definitions.Add(parameterType.Name, objDef);
         }
 
         private static dynamic GetObjectSchemaDefinition(IDictionary<string, object> definitions, Type parameterType)
@@ -335,9 +362,25 @@ namespace mAdcOW.AzureFunction.SwaggerDefinition
                 {
                     requiredProperties.Add(property.Name);
                 }
+
                 dynamic propDef = new ExpandoObject();
                 propDef.description = GetPropertyDescription(property);
                 SetParameterType(property.PropertyType, propDef, definitions);
+
+                IDictionary<string, object> expandoDictionary1 = propDef;
+                expandoDictionary1["x-ms-summary"] = property.Name;
+
+                if (property.GetCustomAttributes().Any(attr => attr is VisibilityAttribute))
+                {
+                    VisibilityAttribute visibility = (VisibilityAttribute)property.GetCustomAttributes().First(attr => attr is VisibilityAttribute);
+                    IDictionary<string, object> expandoDictionary = propDef;
+                    expandoDictionary["x-ms-visibility"] = visibility.Visibility.GetType()
+                        .GetMember(visibility.Visibility.ToString())
+                        .First()
+                        .GetCustomAttribute<DisplayAttribute>()
+                        .GetName();
+                }
+
                 AddToExpando(objDef.properties, property.Name, propDef);
             }
             if (requiredProperties.Count > 0)
@@ -413,17 +456,20 @@ namespace mAdcOW.AzureFunction.SwaggerDefinition
             }
             else if (definitions != null)
             {
+                if (parameterType == null)
+                    throw new Exception("Could not determine parameter type name");
+
                 AddToExpando(setObject, "$ref", "#/definitions/" + parameterType.Name);
                 AddParameterDefinition((IDictionary<string, object>)definitions, parameterType);
             }
         }
 
-        public static string ToTitleCase(string str)
+        private static string ToTitleCase(string str)
         {
             return CultureInfo.CurrentCulture.TextInfo.ToTitleCase(str);
         }
 
-        public static void AddToExpando(ExpandoObject obj, string name, object value)
+        private static void AddToExpando(ExpandoObject obj, string name, object value)
         {
             if (((IDictionary<string, object>)obj).ContainsKey(name))
             {
@@ -440,5 +486,62 @@ namespace mAdcOW.AzureFunction.SwaggerDefinition
                 ((IDictionary<string, object>)obj).Add(name, value);
             }
         }
+    }
+
+    /// <summary>
+    /// Specifies the user-facing visibility for an entity. 
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Property | AttributeTargets.Method)]
+    public class VisibilityAttribute : Attribute
+    {
+        public VisibilityAttribute(ApiVisibility apiVisibility)
+        {
+            Visibility = apiVisibility;
+        }
+
+        [Display(Name = "x-ms-visibility")]
+        public ApiVisibility Visibility { get; set; }
+    }
+
+    public enum ApiVisibility
+    {
+        [Display(Name = "none")]
+        None,
+        [Display(Name = "advanced")]
+        Advanced,
+        [Display(Name = "internal")]
+        Internal,
+        [Display(Name = "important")]
+        Important
+    }
+
+    /// <summary>
+    /// Specifies the title for an entity. 
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Property)]
+    public class SummaryAttribute : Attribute
+    {
+        public SummaryAttribute(string summary)
+        {
+            Summary = summary;
+        }
+
+        [Display(Name = "x-ms-summary")]
+        public string Summary { get; set; }
+    }
+
+    /// <summary>
+    /// Shows a populated list for the user so they can select input parameters for an operation.
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Property)]
+    public class StaticValuesAttribute : Attribute
+    {
+        public StaticValuesAttribute(string[] staticValues)
+        {
+            StaticValues = staticValues;
+        }
+
+        [Display(Name = "enum")]
+        public string[] StaticValues { get; set; }
     }
 }
