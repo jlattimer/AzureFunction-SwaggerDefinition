@@ -61,7 +61,7 @@ namespace mAdcOW.AzureFunction.SwaggerDefinition
             {
                 Content = new ObjectContent<Result<bool>>(new Result<bool>(false), new JsonMediaTypeFormatter())
             });
-        }    
+        }
 
         /// <summary>
         /// If returning the result explicitly, there is no need to annotate with ResponseType
@@ -149,6 +149,11 @@ namespace mAdcOW.AzureFunction.SwaggerDefinition
 
             public bool Public { get; set; }
             public Color Color { get; set; }
+
+            [Summary("This will show a drop down list of states to pick from")]
+            [Visibility(ApiVisibility.Important)]
+            [StaticValues(new[] { "AZ", "MN", "WI" })]
+            public string[] States { get; set; }
         }
 
         public class Color
