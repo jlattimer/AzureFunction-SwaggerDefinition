@@ -1,29 +1,39 @@
+#region Test for .NET vs Standard/Core
+#if (NET2 || NET35 || NET40 || NET45 || NET451 || NET452 || NET46 || NET461 || NET462 || NET47 || NET471 || NET472)
+#define SWAGGER_NETCLASSIC
+#endif
+#endregion
+using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Threading.Tasks;
+using Microsoft.Azure.WebJobs;
+using Microsoft.Azure.WebJobs.Extensions.Http;
+using Microsoft.Azure.WebJobs.Host;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.Dynamic;
 using System.Globalization;
-using System.Linq;
-using System.Net;
-using System.Net.Http;
 using System.Net.Http.Formatting;
 using System.Reflection;
-using System.Threading.Tasks;
 using System.Web.Http;
+#if SWAGGER_NETCLASSIC
 using System.Web.Http.Description;
-using Microsoft.Azure.WebJobs;
-using Microsoft.Azure.WebJobs.Extensions.Http;
-using Microsoft.Azure.WebJobs.Host;
+#else
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Http;
+#endif
+using Microsoft.WindowsAzure.Storage.Table;
 
-namespace mAdcOW.AzureFunction.SwaggerDefinition
+namespace AzureFunctionSwaggerDefinition
 {
     public static class Swagger
     {
-        private const string SwaggerFunctionName = "Swagger";
+        const string SwaggerFunctionName = "Swagger";
 
-        [FunctionName(SwaggerFunctionName)]
-        [ResponseType(typeof(void))]
-        public static async Task<HttpResponseMessage> RunAsync([HttpTrigger(AuthorizationLevel.Function, "get")]HttpRequestMessage req)
+        [FunctionName("Swagger")]
+        public static async Task<HttpResponseMessage> Run([HttpTrigger(AuthorizationLevel.Function, "get", "post", Route = null)]HttpRequestMessage req, TraceWriter log)
         {
             var assembly = Assembly.GetExecutingAssembly();
 
@@ -175,73 +185,114 @@ namespace mAdcOW.AzureFunction.SwaggerDefinition
         private static dynamic GenerateResponseParameterSignature(MethodInfo methodInfo, dynamic doc)
         {
             dynamic responses = new ExpandoObject();
-            dynamic responseDef = new ExpandoObject();
-            responseDef.description = "OK";
-
-            var returnType = methodInfo.ReturnType;
-            if (returnType.IsGenericType)
+#if SWAGGER_NETCLASSIC
+            var responseTypeAttrs = (IEnumerable<ResponseTypeAttribute>)methodInfo.GetCustomAttributes(typeof(ResponseTypeAttribute), false);
+            if (responseTypeAttrs.Count() == 0)
+                responseTypeAttrs = responseTypeAttrs.Concat(new[] { (ResponseTypeAttribute)null });
+#else
+            var responseTypeAttrs = (IEnumerable<ProducesResponseTypeAttribute>)methodInfo.GetCustomAttributes(typeof(ProducesResponseTypeAttribute), false);
+            if (responseTypeAttrs.Count() == 0)
+                responseTypeAttrs = responseTypeAttrs.Concat(new[] { (ProducesResponseTypeAttribute)null });
+#endif
+            foreach (var responseTypeAttr in responseTypeAttrs)
             {
-                var genericReturnType = returnType.GetGenericArguments().FirstOrDefault();
-                if (genericReturnType != null)
+                dynamic responseDef = new ExpandoObject();
+                responseDef.description = "OK";
+                int responseCode = 200;
+                var returnType = methodInfo.ReturnType;
+                if (responseTypeAttr != null)
                 {
-                    returnType = genericReturnType;
+#if SWAGGER_NETCLASSIC
+                    responseCode = 200;
+#else
+                    responseCode = responseTypeAttr.StatusCode;
+#endif
                 }
-            }
-            if (returnType == typeof(HttpResponseMessage))
-            {
-                var responseTypeAttr = (ResponseTypeAttribute)methodInfo
-                    .GetCustomAttributes(typeof(ResponseTypeAttribute), false).FirstOrDefault();
-                returnType = responseTypeAttr != null
-                    ? responseTypeAttr.ResponseType
-                    : typeof(void);
-            }
-            if (returnType != typeof(void))
-            {
-                responseDef.schema = new ExpandoObject();
-
-                if (returnType.Namespace == "System")
+                if (returnType.IsGenericType)
                 {
-                    // Warning:
-                    // Allthough valid, it's always better to wrap single values in an object
-                    // Returning { Value = "foo" } is better than just "foo"
-                    SetParameterType(returnType, responseDef.schema, null);
-                }
-                else
-                {
-                    string name = returnType.Name;
-                    if (returnType.IsGenericType)
+                    var genericReturnType = returnType.GetGenericArguments().FirstOrDefault();
+                    if (genericReturnType != null)
                     {
-                        var realType = returnType.GetGenericArguments()[0];
-                        if (realType.Namespace == "System")
-                        {
-                            dynamic inlineSchema = GetObjectSchemaDefinition(null, returnType);
-                            responseDef.schema = inlineSchema;
-                        }
-                        else
-                        {
-                            AddToExpando(responseDef.schema, "$ref", "#/definitions/" + name);
-                            AddParameterDefinition((IDictionary<string, object>)doc.definitions, returnType);
-                        }
+                        returnType = genericReturnType;
+                    }
+                }
+                if (returnType == typeof(HttpResponseMessage))
+                {
+                    if (responseTypeAttr == null)
+                    {
+                        returnType = typeof(void);
                     }
                     else
                     {
-                        AddToExpando(responseDef.schema, "$ref", "#/definitions/" + name);
-                        AddParameterDefinition((IDictionary<string, object>)doc.definitions, returnType);
+#if SWAGGER_NETCLASSIC
+                        returnType = responseTypeAttr.ResponseType;
+#else
+                        returnType = responseTypeAttr.Type;
+#endif
                     }
                 }
+                if (returnType != typeof(void))
+                {
+                    responseDef.schema = new ExpandoObject();
+
+                    if (returnType.Namespace == "System")
+                    {
+                        // Warning:
+                        // Allthough valid, it's always better to wrap single values in an object
+                        // Returning { Value = "foo" } is better than just "foo"
+                        SetParameterType(returnType, responseDef.schema, null);
+                    }
+                    else
+                    {
+                        string name = returnType.Name;
+                        if (returnType.IsGenericType)
+                        {
+                            var realType = returnType.GetGenericArguments()[0];
+                            if (realType.Namespace == "System")
+                            {
+                                dynamic inlineSchema = GetObjectSchemaDefinition(null, returnType);
+                                responseDef.schema = inlineSchema;
+                            }
+                            else
+                            {
+                                AddDefinition(doc, responseDef.schema, returnType, name);
+                            }
+                        }
+                        else if (returnType.IsArray)
+                        {
+                            AddToExpando(responseDef.schema, "type", "array");
+                            responseDef.schema.items = new ExpandoObject();
+                            AddDefinition(doc, responseDef.schema.items, returnType, returnType.GetElementType().Name);
+                        }
+                        else
+                        {
+                            AddDefinition(doc, responseDef.schema, returnType, name);
+                        }
+                    }
+                }
+                AddToExpando(responses, $"{responseCode}", responseDef);
             }
-            AddToExpando(responses, "200", responseDef);
             return responses;
         }
 
+        private static void AddDefinition(dynamic doc, dynamic responseDefNode, Type returnType, string name)
+        {
+            AddToExpando(responseDefNode, "$ref", "#/definitions/" + name);
+            AddParameterDefinition((IDictionary<string, object>)doc.definitions, returnType);
+        }
         private static List<object> GenerateFunctionParametersSignature(MethodInfo methodInfo, string route, dynamic doc)
         {
             var parameterSignatures = new List<object>();
             foreach (ParameterInfo parameter in methodInfo.GetParameters())
             {
                 if (parameter.ParameterType == typeof(HttpRequestMessage)) continue;
+#if !SWAGGER_NETCLASSIC
+                if (parameter.ParameterType == typeof(HttpRequest)) continue;
+#endif
+                if (parameter.ParameterType == typeof(ExecutionContext)) continue;
                 if (parameter.ParameterType == typeof(TraceWriter)) continue;
                 if (parameter.ParameterType == typeof(Microsoft.Extensions.Logging.ILogger)) continue;
+                if (parameter.ParameterType == typeof(CloudTable)) continue;
 
                 bool hasUriAttribute = parameter.GetCustomAttributes().Any(attr => attr is FromUriAttribute);
 
@@ -343,10 +394,11 @@ namespace mAdcOW.AzureFunction.SwaggerDefinition
 
         private static void AddParameterDefinition(IDictionary<string, object> definitions, Type parameterType)
         {
-            if (definitions.TryGetValue(parameterType.Name, out var objDef)) return;
-
-            objDef = GetObjectSchemaDefinition(definitions, parameterType);
-            definitions.Add(parameterType.Name, objDef);
+            if (!definitions.TryGetValue(parameterType.Name, out dynamic objDef))
+            {
+                objDef = GetObjectSchemaDefinition(definitions, parameterType);
+                definitions.Add(parameterType.Name, objDef);
+            }
         }
 
         private static dynamic GetObjectSchemaDefinition(IDictionary<string, object> definitions, Type parameterType)
@@ -456,20 +508,18 @@ namespace mAdcOW.AzureFunction.SwaggerDefinition
             }
             else if (definitions != null)
             {
-                if (parameterType == null)
-                    throw new Exception("Could not determine parameter type name");
 
                 AddToExpando(setObject, "$ref", "#/definitions/" + parameterType.Name);
                 AddParameterDefinition((IDictionary<string, object>)definitions, parameterType);
             }
         }
 
-        private static string ToTitleCase(string str)
+        public static string ToTitleCase(string str)
         {
             return CultureInfo.CurrentCulture.TextInfo.ToTitleCase(str);
         }
 
-        private static void AddToExpando(ExpandoObject obj, string name, object value)
+        public static void AddToExpando(ExpandoObject obj, string name, object value)
         {
             if (((IDictionary<string, object>)obj).ContainsKey(name))
             {
@@ -500,7 +550,7 @@ namespace mAdcOW.AzureFunction.SwaggerDefinition
         }
 
         [Display(Name = "x-ms-visibility")]
-        public ApiVisibility Visibility { get; set; }
+        public ApiVisibility Visibility { get; }
     }
 
     public enum ApiVisibility
@@ -527,7 +577,7 @@ namespace mAdcOW.AzureFunction.SwaggerDefinition
         }
 
         [Display(Name = "x-ms-summary")]
-        public string Summary { get; set; }
+        public string Summary { get; }
     }
 
     /// <summary>
@@ -542,6 +592,6 @@ namespace mAdcOW.AzureFunction.SwaggerDefinition
         }
 
         [Display(Name = "enum")]
-        public string[] StaticValues { get; set; }
+        public string[] StaticValues { get; }
     }
 }

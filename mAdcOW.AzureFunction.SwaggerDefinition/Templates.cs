@@ -1,3 +1,8 @@
+#region Test for .NET vs Standard/Core
+#if (NET2 || NET35 || NET40 || NET45 || NET451 || NET452 || NET46 || NET461 || NET462 || NET47 || NET471 || NET472)
+#define SWAGGER_NETCLASSIC
+#endif
+#endregion
 using System.ComponentModel.DataAnnotations;
 using System.Net;
 using System.Net.Http;
@@ -8,8 +13,13 @@ using System.Web.Http.Description;
 using Microsoft.Azure.WebJobs;
 using Microsoft.Azure.WebJobs.Extensions.Http;
 using Microsoft.Azure.WebJobs.Host;
+#if SWAGGER_NETCLASSIC
+using System.Web.Http.Description;
+#else
+using Microsoft.AspNetCore.Mvc;
+#endif
 
-namespace mAdcOW.AzureFunction.SwaggerDefinition
+namespace AzureFunctionSwaggerDefinition
 {
     public static class Templates
     {
@@ -17,7 +27,11 @@ namespace mAdcOW.AzureFunction.SwaggerDefinition
         /// When returning a HttpResponseMessage, annotate the class with ResponseType
         /// </summary>
         [FunctionName("TemplatePost1")]
+#if SWAGGER_NETCLASSIC
         [ResponseType(typeof(BodyClass))]
+#else
+        [ProducesResponseType(typeof(BodyClass), 200)]
+#endif
         [Display(Name = "Test Post", Description = "This is a longer description")]
         public static async Task<HttpResponseMessage> Post1(
             [HttpTrigger(AuthorizationLevel.Function, "post")] BodyClass myinput, TraceWriter log)
@@ -50,7 +64,11 @@ namespace mAdcOW.AzureFunction.SwaggerDefinition
         /// It's best practice to return a class as a result to provide context and parameter naming 
         /// </summary>
         [FunctionName("TemplateGet1")]
+#if SWAGGER_NETCLASSIC
         [ResponseType(typeof(Result<bool>))]
+#else
+        [ProducesResponseType(typeof(Result<bool>), 200)]
+#endif
         public static async Task<HttpResponseMessage> Get1(
             [HttpTrigger(AuthorizationLevel.Function, "get", Route = "TemplateGet1/name/{name}/id/{id}")] string name,
             int id, TraceWriter log)
